@@ -9,6 +9,13 @@
 #define TRUE 1
 #define FALSE 0
 
+//wtf c standard
+#ifndef max
+   #define max(a,b) (((a) > (b)) ? (a) : (b))
+   #define min(a,b) (((a) < (b)) ? (a) : (b))
+#endif
+
+
 typedef struct _bmpHeader {
     uint32_t fileSize;
     uint16_t creator1;
@@ -58,19 +65,13 @@ typedef struct _raymarchResult {
 } raymarchResult;
 
 
-double vecLength(vec3 v);
-void vecNormalizeInplace(vec3 *v);
-void vecRotateXInplace(vec3 *v, double theta);
-void vecRotateYInplace(vec3 *v, double theta);
-vec3 vecAddX(vec3 v, double c);
-vec3 vecAddY(vec3 v, double c);
-vec3 vecAddZ(vec3 v, double c);
-
-
 void renderFractal(FILE *outFile,
                    colour (*drawFunction)(double x, double y),
                    int width, int height,
                    int zoom, double x, double y);
+
+void writeBMP(FILE *outFile, colour* data, int width, int height);
+
 colour drawMandelbrot(double x, double y);
 colour drawMandelbulb(double x, double y);
 
@@ -78,8 +79,26 @@ raymarchResult mandelbulbRaymarch(vec3 pos, vec3 direction);
 double mandelbulbDistanceEstimator(vec3 pos);
 vec3 mandelbulbEstimateNormal(vec3 pos);
 
-void writeBMP(FILE *outFile, colour* data, int width, int height);
+colour phongShade(vec3 pos, vec3 normal, vec3 eye, vec3 light);
+
+double vecLength(vec3 v);
+void vecNormalizeInplace(vec3 *v);
+vec3 vecNormalize(vec3 v);
+void vecRotateXInplace(vec3 *v, double theta);
+void vecRotateYInplace(vec3 *v, double theta);
+vec3 vecAddX(vec3 v, double c);
+vec3 vecAddY(vec3 v, double c);
+vec3 vecAddZ(vec3 v, double c);
+vec3 vecAdd(vec3 a, vec3 b);
+vec3 vecAdd3(vec3 a, vec3 b, vec3 c);
+vec3 vecSub(vec3 a, vec3 b);
+vec3 vecMul(vec3 a, double c);
+double vecDot(vec3 a, vec3 b);
+
 double randf();
+
+
+
 
 int main(int argc, char **argv) {
     FILE *outFile;
@@ -168,6 +187,70 @@ void renderFractal(FILE *outFile,
 
 }
 
+
+void writeBMP(FILE *outFile, colour* data, int width, int height) {
+    bmpHeader header;
+    bmpInfoHeader infoHeader;
+    int x, y;
+    int stride = ((width*3 + 3) / 4) * 4;
+    
+    //yay gcc automagic memory
+    uint8_t bmpData[height][stride];
+    
+    
+    //firstly write the bmp magic
+    fwrite("BM", 1, 2, outFile);
+    
+    //populate the header
+    
+    //3 bytes per pixel, but row aligned to 4 bytes
+    header.fileSize = 2 + sizeof(bmpHeader) + sizeof(bmpInfoHeader)
+    + stride*height;
+    
+    header.creator1 = 0;
+    header.creator2 = 0;
+    header.dataOffset = 2 + sizeof(bmpHeader) + sizeof(bmpInfoHeader);
+    
+    //write the header
+    fwrite(&header, sizeof(header), 1, outFile);
+    
+    //populate the DIB header
+    infoHeader.headerSize = sizeof(bmpInfoHeader);
+    infoHeader.width = width;
+    infoHeader.height = height;
+    infoHeader.planes = 1;
+    infoHeader.bitsPerPixel = 24;
+    
+    //bmp compression. don't need to populate imageSize
+    infoHeader.compression = 0;
+    infoHeader.imageSize = 0;
+    
+    infoHeader.xPixelsPerMeter = 2835;
+    infoHeader.yPixelsPerMeter = 2835;
+    
+    //only used for indexed colour palettes
+    infoHeader.userColours = 0;
+    infoHeader.importantColours = 0;
+    
+    //write the DIB header
+    fwrite(&infoHeader, sizeof(infoHeader), 1, outFile);
+    
+    //we need to rewrite the image data into the correct stride
+    memset(bmpData, 0, height*stride);
+    for (y=0; y<height; y++) {
+        for (x=0; x<width; x++) {
+            bmpData[y][x*3+0] = data[y*width+x].b;
+            bmpData[y][x*3+1] = data[y*width+x].g;
+            bmpData[y][x*3+2] = data[y*width+x].r;
+        }
+    }
+    
+    //write the image data
+    fwrite(data, 1, height*stride, outFile);
+    
+    fclose(outFile);
+}
+
 colour drawMandelbrot(double x, double y) {
     const int iterations = 256;
     
@@ -213,11 +296,22 @@ colour drawMandelbulb(double x, double y) {
     if (v.hit) {
         vec3 normal = mandelbulbEstimateNormal(v.pos);
         
-        ret.r = ret.g = ret.b = (normal.x+normal.y+normal.z+3)/6 * 255;
-        /*
-        ret.r = (normal.y+1)/2 * 255;
-        ret.g = (normal.x+1)/2 * 255;
-        ret.b = (normal.z+1)/2 * 255;*/
+        vec3 light = {33, -28, -40};
+        ret = phongShade(v.pos, normal, eye, light);
+        
+        /*vec3 lightDir = vecNormalize(vecSub(light, vecSub(v.pos, vecMul(normal, 0.1))));
+        raymarchResult v2 = mandelbulbRaymarch(v.pos, lightDir);
+        if (v2.hit) {
+            ret.r /= 2;
+            ret.g /= 2;
+            ret.b /= 2;
+        }*/
+        
+        //ret.r = ret.g = ret.b = (normal.x+normal.y+normal.z+3)/6 * 255;
+        
+        //ret.r = (normal.y+1)/2 * 255;
+        //ret.g = (normal.x+1)/2 * 255;
+        //ret.b = (normal.z+1)/2 * 255;
     } else {
         ret.r = 0;
         ret.g = 0;
@@ -345,69 +439,69 @@ raymarchResult mandelbulbRaymarch(vec3 pos, vec3 direction) {
     return ret;
 }
 
-
-
-void writeBMP(FILE *outFile, colour* data, int width, int height) {
-    bmpHeader header;
-    bmpInfoHeader infoHeader;
-    int x, y;
-    int stride = ((width*3 + 3) / 4) * 4;
+//computes phong shading
+//https://en.wikipedia.org/wiki/Phong_reflection_model
+colour phongShade(vec3 pos, vec3 normal, vec3 eye, vec3 light) {
     
-    //yay gcc automagic memory
-    uint8_t bmpData[height][stride];
+    const vec3 ambientColour = {0.4, 0.2, 0.2};
+    const vec3 diffuseColour = {1, 0, 0};
+    const vec3 specularColour = {1, 1, 1};
+    const double specularity = 0.7;
+    const double shininess = 5;
+    
+    vec3 lightDirection;
+    vec3 eyeDirection;
+    double normalDotLight;
+    vec3 reflected;
+    double reflectionDotEye;
+    double reflectionSpecular;
+    
+    vec3 diffuse = {0, 0, 0};
+    vec3 specular = {0, 0, 0};
+    vec3 resColour;
+    
+    colour ret;
     
     
-    //firstly write the bmp magic
-    fwrite("BM", 1, 2, outFile);
+    lightDirection = vecSub(light, pos);
+    vecNormalizeInplace(&lightDirection);
     
-    //populate the header
+    eyeDirection = vecSub(eye, pos);
+    vecNormalizeInplace(&eyeDirection);
     
-    //3 bytes per pixel, but row aligned to 4 bytes
-    header.fileSize = 2 + sizeof(bmpHeader) + sizeof(bmpInfoHeader)
-                        + stride*height;
+    normalDotLight = vecDot(normal, lightDirection);
     
-    header.creator1 = 0;
-    header.creator2 = 0;
-    header.dataOffset = 2 + sizeof(bmpHeader) + sizeof(bmpInfoHeader);
-    
-    //write the header
-    fwrite(&header, sizeof(header), 1, outFile);
-    
-    //populate the DIB header
-    infoHeader.headerSize = sizeof(bmpInfoHeader);
-    infoHeader.width = width;
-    infoHeader.height = height;
-    infoHeader.planes = 1;
-    infoHeader.bitsPerPixel = 24;
-    
-    //bmp compression. don't need to populate imageSize
-    infoHeader.compression = 0;
-    infoHeader.imageSize = 0;
-    
-    infoHeader.xPixelsPerMeter = 2835;
-    infoHeader.yPixelsPerMeter = 2835;
-    
-    //only used for indexed colour palettes
-    infoHeader.userColours = 0;
-    infoHeader.importantColours = 0;
-    
-    //write the DIB header
-    fwrite(&infoHeader, sizeof(infoHeader), 1, outFile);
-    
-    //we need to rewrite the image data into the correct stride
-    memset(bmpData, 0, height*stride);
-    for (y=0; y<height; y++) {
-        for (x=0; x<width; x++) {
-            bmpData[y][x*3+0] = data[y*width+x].b;
-            bmpData[y][x*3+1] = data[y*width+x].g;
-            bmpData[y][x*3+2] = data[y*width+x].r;
+    if (normalDotLight > 0) { //if surface is facing towards the light
+        //diffuse shading
+        diffuse.x = diffuseColour.x * normalDotLight;
+        diffuse.y = diffuseColour.y * normalDotLight;
+        diffuse.z = diffuseColour.z * normalDotLight;
+        
+        //phong highlight
+        //find the reflected vector
+        reflected.x = lightDirection.x - 2 * normalDotLight * normal.x;
+        reflected.z = lightDirection.y - 2 * normalDotLight * normal.y;
+        reflected.y = lightDirection.z - 2 * normalDotLight * normal.z;
+        
+        reflectionDotEye = vecDot(reflected, eyeDirection);
+        
+        //if the reflection is in the direction of the eye
+        if (reflectionDotEye <= 0) {
+            reflectionSpecular = specularity * pow(
+                abs(reflectionDotEye), shininess);
+            specular = vecMul(specularColour, reflectionSpecular);
+        //    specular = specularColour;
         }
     }
     
-    //write the image data
-    fwrite(data, 1, height*stride, outFile);
+    resColour = vecAdd3(ambientColour, diffuse, specular);
     
-    fclose(outFile);
+    //clamp everything down into 0-255
+    ret.r = min(max(resColour.x, 0), 1) * 255;
+    ret.g = min(max(resColour.y, 0), 1) * 255;
+    ret.b = min(max(resColour.z, 0), 1) * 255;
+    
+    return ret;
 }
 
 
@@ -415,12 +509,19 @@ double vecLength(vec3 v) {
     return sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
 }
 
+
 void vecNormalizeInplace(vec3 *v) {
     double mag = vecLength(*v);
     v->x /= mag;
     v->y /= mag;
     v->z /= mag;
 }
+
+vec3 vecNormalize(vec3 v) {
+    vecNormalizeInplace(&v);
+    return v;
+}
+
 
 void vecRotateXInplace(vec3 *v, double theta) {
     vec3 ret;
@@ -457,6 +558,42 @@ vec3 vecAddY(vec3 v, double c) {
 vec3 vecAddZ(vec3 v, double c) {
     v.z += c;
     return v;
+}
+
+vec3 vecAdd(vec3 a, vec3 b) {
+    vec3 ret;
+    ret.x = a.x + b.x;
+    ret.y = a.y + b.y;
+    ret.z = a.z + b.z;
+    return ret;
+}
+
+vec3 vecAdd3(vec3 a, vec3 b, vec3 c) {
+    vec3 ret;
+    ret.x = a.x + b.x + c.x;
+    ret.y = a.y + b.y + c.y;
+    ret.z = a.z + b.z + c.z;
+    return ret;
+}
+
+vec3 vecSub(vec3 a, vec3 b) {
+    vec3 ret;
+    ret.x = a.x - b.x;
+    ret.y = a.y - b.y;
+    ret.z = a.z - b.z;
+    return ret;
+}
+
+vec3 vecMul(vec3 a, double c) {
+    vec3 ret;
+    ret.x = a.x * c;
+    ret.y = a.y * c;
+    ret.z = a.z * c;
+    return ret;
+}
+
+double vecDot(vec3 a, vec3 b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
 //returns a random double between 0.0 and 1.0
