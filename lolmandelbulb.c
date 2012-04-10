@@ -67,8 +67,10 @@ vec3 vecAddY(vec3 v, double c);
 vec3 vecAddZ(vec3 v, double c);
 
 
-void renderMandelbrot(FILE *outFile, int width, int height,
-                      int zoom, double x, double y);
+void renderFractal(FILE *outFile,
+                   colour (*drawFunction)(double x, double y),
+                   int width, int height,
+                   int zoom, double x, double y);
 colour drawMandelbrot(double x, double y);
 colour drawMandelbulb(double x, double y);
 
@@ -77,6 +79,7 @@ double mandelbulbDistanceEstimator(vec3 pos);
 vec3 mandelbulbEstimateNormal(vec3 pos);
 
 void writeBMP(FILE *outFile, colour* data, int width, int height);
+double randf();
 
 int main(int argc, char **argv) {
     FILE *outFile;
@@ -105,41 +108,59 @@ int main(int argc, char **argv) {
         height = atoi(argv[6]);
     }
     
-    renderMandelbrot(outFile, width, height, zoom, x, y);
+    renderFractal(outFile, drawMandelbulb, width, height, zoom, x, y);
     
     return 0;
 }
 
-void renderMandelbrot(FILE *outFile, int width, int height,
-                      int zoom, double x, double y) {
+void renderFractal(FILE *outFile,
+                   colour (*drawFunction)(double x, double y),
+                   int width, int height,
+                   int zoom, double x, double y) {
 
-    double cx, cy;
-    int px, py;
-    double pixSize = 1. / (1 << zoom);
+    const int supersamplingSamples = 1;
+    
+    int px, py; //pixel location
+    double cx, cy; //pixel location on the draw plane
+    double pixelSize = 1. / (1 << zoom); //pixel size on the draw plane
     colour data[height][width];
     
-#pragma omp parallel for shared(data) private(px, py, cx, cy)
+    int i;
+    double dx, dy; //supersample offsets
+    colour initialColour, sampleColour;
+    int cumr, cumg, cumb; //cumulative sum oversample colours
+    
+    
+    
+#pragma omp parallel for shared(data) private(px, py, cx, cy, \
+                                              i, dx, dy, \
+                                              initialColour, \
+                                              sampleColour, \
+                                              cumr, cumg, cumb)
     for (py=0; py<height; py++) {
         for (px=0; px<width; px++) {
-            cx = x + (px - width/2) * pixSize;
-            cy = y + (py - height/2) * pixSize;
+            cx = x + (px - width/2) * pixelSize;
+            cy = y + (py - height/2) * pixelSize;
             
-            int r = 0, g = 0, b = 0;
+            initialColour = drawFunction(cx, cy);
+            cumr = initialColour.r;
+            cumg = initialColour.g;
+            cumb = initialColour.b;
+            
             //supersampling!
-            int i;
-            int samples = 4;
-            for (i=0; i<samples; i++) {
-                double dx = (((double)rand() / RAND_MAX) - 0.5) * pixSize;
-                double dy = (((double)rand() / RAND_MAX) - 0.5) * pixSize;
-                colour c = drawMandelbulb(cx+dx, cy+dy);
-                r += c.r;
-                g += c.g;
-                b += c.b;
+            //sample the rest with random diviations from the centre.
+            for (i=1; i<supersamplingSamples; i++) {
+                dx = (randf() - 0.5) * pixelSize;
+                dy = (randf() - 0.5) * pixelSize;
+                sampleColour = drawFunction(cx+dx, cy+dy);
+                cumr += sampleColour.r;
+                cumg += sampleColour.g;
+                cumb += sampleColour.b;
             }
             
-            data[py][px].r = r/samples;
-            data[py][px].g = g/samples;
-            data[py][px].b = b/samples;
+            data[py][px].r = cumr / supersamplingSamples;
+            data[py][px].g = cumg / supersamplingSamples;
+            data[py][px].b = cumb / supersamplingSamples;
         }
     }
     
@@ -192,9 +213,11 @@ colour drawMandelbulb(double x, double y) {
     if (v.hit) {
         vec3 normal = mandelbulbEstimateNormal(v.pos);
         
+        ret.r = ret.g = ret.b = (normal.x+normal.y+normal.z+3)/6 * 255;
+        /*
         ret.r = (normal.y+1)/2 * 255;
         ret.g = (normal.x+1)/2 * 255;
-        ret.b = (normal.z+1)/2 * 255;
+        ret.b = (normal.z+1)/2 * 255;*/
     } else {
         ret.r = 0;
         ret.g = 0;
@@ -217,6 +240,9 @@ double mandelbulbDistanceEstimator(vec3 pos) {
     //keeping track of the 'running derivitive'
     //of the magnitude, and pass that to a magical
     //formula
+    
+    //Math stolen from 'Mikael Hvidtfeldt Christensen'
+    //http://blog.hvidtfeldts.net
     
     
     const int iterations = 13;
@@ -258,10 +284,7 @@ double mandelbulbDistanceEstimator(vec3 pos) {
         z.z += pos.z;
     }
     
-    //printf("(%lf,%lf)", magnitude, dmagnitude); 
-    
     return 0.5 * log(magnitude) * magnitude / dmagnitude;
-    
 }
 
 vec3 mandelbulbEstimateNormal(vec3 pos) {
@@ -269,7 +292,10 @@ vec3 mandelbulbEstimateNormal(vec3 pos) {
     
     vec3 ret;
     
-    //
+    //So the normal is akin to the derivative of the surface of the
+    //fractal. Estimate it by taking the difference of 'distances'
+    //sampled either side in each axis.
+    
     ret.x = mandelbulbDistanceEstimator(vecAddX(pos, epsilon))
             - mandelbulbDistanceEstimator(vecAddX(pos, -epsilon));
             
@@ -287,7 +313,7 @@ vec3 mandelbulbEstimateNormal(vec3 pos) {
 raymarchResult mandelbulbRaymarch(vec3 pos, vec3 direction) {
     const int maxSteps = 128;
     const double maxDist = 4;
-    const double minDist = 0.0005;
+    const double minDist = 0.001;
     
     double stepDistance;
         
@@ -307,8 +333,6 @@ raymarchResult mandelbulbRaymarch(vec3 pos, vec3 direction) {
             break;
         }
         
-        //printf("+%lf_%lf ", distance, totalDistance);
-        
         ret.distance += stepDistance;
         
         pos.x += stepDistance * direction.x;
@@ -320,6 +344,7 @@ raymarchResult mandelbulbRaymarch(vec3 pos, vec3 direction) {
     
     return ret;
 }
+
 
 
 void writeBMP(FILE *outFile, colour* data, int width, int height) {
@@ -355,7 +380,7 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     infoHeader.planes = 1;
     infoHeader.bitsPerPixel = 24;
     
-    //bmp compression, so don't need to populate imageSize
+    //bmp compression. don't need to populate imageSize
     infoHeader.compression = 0;
     infoHeader.imageSize = 0;
     
@@ -371,7 +396,6 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     
     //we need to rewrite the image data into the correct stride
     memset(bmpData, 0, height*stride);
-    
     for (y=0; y<height; y++) {
         for (x=0; x<width; x++) {
             bmpData[y][x*3+0] = data[y*width+x].b;
@@ -433,4 +457,9 @@ vec3 vecAddY(vec3 v, double c) {
 vec3 vecAddZ(vec3 v, double c) {
     v.z += c;
     return v;
+}
+
+//returns a random double between 0.0 and 1.0
+double randf() {
+    return (double)rand() / RAND_MAX;
 }
