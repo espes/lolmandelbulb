@@ -1,10 +1,16 @@
-// Niel van der Westhuizen, 2012
+// lolmandelbulb.c
+// comp1917 task2
+// Created by Niel van der Westhuizen, 09/04/2012
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include <assert.h>
+
+#include <netinet/in.h>
+#include <unistd.h>
 
 #define TRUE 1
 #define FALSE 0
@@ -14,6 +20,11 @@
    #define max(a,b) (((a) > (b)) ? (a) : (b))
    #define min(a,b) (((a) < (b)) ? (a) : (b))
 #endif
+
+
+#define SIMPLE_SERVER_VERSION 1.0
+#define REQUEST_BUFFER_SIZE 1024
+#define DEFAULT_PORT 7191
 
 
 typedef struct _bmpHeader {
@@ -64,6 +75,10 @@ typedef struct _raymarchResult {
     vec3 pos;
 } raymarchResult;
 
+void writeStringToSocket(int socket, const char* string);
+void writeFileToSocket(int socket, const char* fileName);
+int waitForConnection(int serverSocket);
+int makeServerSocket(int portno);
 
 void renderFractal(FILE *outFile,
                    colour (*drawFunction)(double x, double y),
@@ -101,20 +116,20 @@ double randf();
 
 
 int main(int argc, char **argv) {
-    FILE *outFile;
     int width = 512;
     int height = 512;
     
     int zoom;
     double x, y;
     
+    /*
     if (argc < 5) {
         printf("Usage: %s outfile x y zoom [width] [height]\n", argv[0]);
         return 1;
     }
     
     //process the arguments
-    outFile = fopen(argv[1], "wb");
+    FILE *outFile = fopen(argv[1], "wb");
     x = strtod(argv[2], NULL);
     y = strtod(argv[3], NULL);
     zoom = atoi(argv[4]);
@@ -129,8 +144,163 @@ int main(int argc, char **argv) {
     
     renderFractal(outFile, drawMandelbulb, width, height, zoom, x, y);
     
+    fclose(outFile);
+    */
+    
+    int serverSocket = makeServerSocket(DEFAULT_PORT);
+    printf("Serving fractals on http://localhost:%d\n", DEFAULT_PORT);
+    
+    
+    char requestBuffer[REQUEST_BUFFER_SIZE];
+    char requestUrl[REQUEST_BUFFER_SIZE];
+    while (TRUE) {
+        int connectionSocket = waitForConnection(serverSocket);
+        
+        int bytesRead = read(connectionSocket, requestBuffer,
+                         sizeof(requestBuffer)-1);
+        assert(bytesRead >= 0);
+        
+        printf("http request: %s\n", requestBuffer);
+        
+        if (sscanf(requestBuffer, "GET %s HTTP/%*d.%*d\r\n",
+                   requestUrl) == 1) {
+            
+            //we have a request!
+            if (sscanf(requestUrl,
+                       "/X-%lf-%lf-%d.bmp", &x, &y, &zoom) == 3) {
+                //we're requested to serve a render!
+                
+                writeStringToSocket(connectionSocket,
+                    "HTTP/1.0 200 Found\r\n"
+                    "Content-Type: image/x-ms-bmp\r\n"
+                    "\r\n");
+                
+                
+                //open the socket as a file handle so we can reuse
+                //renderFractal code for files :D
+                FILE *responseHandle = fdopen(connectionSocket, "w+");
+                assert(responseHandle);
+                
+                renderFractal(responseHandle, drawMandelbulb,
+                              width, height, zoom, x, y);
+                
+                fflush(responseHandle);
+                //assert(fclose(responseHandle) == 0);
+                
+            } else if (strcmp(requestUrl, "/tile.min.js") == 0) {
+                //send the interface logic javascript
+                writeStringToSocket(connectionSocket,
+                    "HTTP/1.0 200 Found\r\n"
+                    "Content-Type: text/javascript\r\n"
+                    "\r\n");
+                
+                writeFileToSocket(connectionSocket, "tile.min.js");
+            } else {
+                //any other request, serve the viewer
+                writeStringToSocket(connectionSocket,
+                    "HTTP/1.0 200 Found\r\n"
+                    "Content-Type: text/html\r\n"
+                    "\r\n"
+                    "<html>"
+                    "<script src=\""
+                    
+//    "https://openlearning.cse.unsw.edu.au/site_media/viewer/tile.min.js"
+                    "/tile.min.js"
+                    
+                    "\"></script></html>");
+            }
+        } else {
+            //did not recieve a valid HTTP get
+            writeStringToSocket(connectionSocket,
+                              "HTTP/1.0 400 Bad Request\r\n");
+        }
+        
+        //assert(close(connectionSocket) == 0);
+        close(connectionSocket);
+    }
+    
     return 0;
 }
+
+void writeStringToSocket(int socket, const char* string) {
+    assert(write(socket,
+                 string, strlen(string))
+            == strlen(string));
+}
+
+void writeFileToSocket(int socket, const char* fileName) {
+    FILE *file = fopen(fileName, "r");
+    uint8_t sendBuffer[1024];
+    while (!feof(file)) {
+        size_t read = fread(sendBuffer, 1, sizeof(sendBuffer), file);
+        assert( write(socket, sendBuffer, read) == read );
+    }
+    fclose(file);
+}
+
+//start the server listening on the specified port number
+//stolen from comp1917 "simpleServer.c"
+int makeServerSocket(int portNumber) { 
+    
+    // create socket
+    int serverSocket = socket (AF_INET, SOCK_STREAM, 0);
+    assert (serverSocket >= 0);   
+    // error opening socket
+    
+    // bind socket to listening port
+    struct sockaddr_in serverAddress;
+    bzero ((char *) &serverAddress, sizeof (serverAddress));
+    
+    serverAddress.sin_family      = AF_INET;
+    serverAddress.sin_addr.s_addr = INADDR_ANY;
+    serverAddress.sin_port        = htons (portNumber);
+    
+    // let the server start immediately after a previous shutdown
+    int optionValue = 1;
+    setsockopt (
+        serverSocket,
+        SOL_SOCKET,
+        SO_REUSEADDR,
+        &optionValue, 
+        sizeof(int)
+    );
+    
+    int bindSuccess = bind (
+        serverSocket, 
+        (struct sockaddr *) &serverAddress,
+          sizeof (serverAddress)
+    );
+    
+    assert (bindSuccess >= 0);
+    // if this assert fails wait a short while to let the operating 
+    // system clear the port before trying again
+    
+    return serverSocket;
+}
+
+//wait for a browser to request a connection,
+//returns the socket on which the conversation will take place
+//stolen from comp1917 "simpleServer.c"
+int waitForConnection(int serverSocket) {
+    // listen for a connection
+    const int serverMaxBacklog = 10;
+    listen (serverSocket, serverMaxBacklog);
+    
+    // accept the connection
+    struct sockaddr_in clientAddress;
+    socklen_t clientLen = sizeof (clientAddress);
+    int connectionSocket = accept (
+        serverSocket, 
+        (struct sockaddr *) &clientAddress, 
+            &clientLen
+    );
+    
+    assert (connectionSocket >= 0);
+    // error on accept
+    
+    return (connectionSocket);
+}
+
 
 void renderFractal(FILE *outFile,
                    colour (*drawFunction)(double x, double y),
@@ -187,7 +357,6 @@ void renderFractal(FILE *outFile,
 
 }
 
-
 void writeBMP(FILE *outFile, colour* data, int width, int height) {
     bmpHeader header;
     bmpInfoHeader infoHeader;
@@ -197,7 +366,6 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     //yay gcc automagic memory
     uint8_t bmpData[height][stride];
     
-    
     //firstly write the bmp magic
     fwrite("BM", 1, 2, outFile);
     
@@ -205,7 +373,7 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     
     //3 bytes per pixel, but row aligned to 4 bytes
     header.fileSize = 2 + sizeof(bmpHeader) + sizeof(bmpInfoHeader)
-    + stride*height;
+                        + stride*height;
     
     header.creator1 = 0;
     header.creator2 = 0;
@@ -236,7 +404,7 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     fwrite(&infoHeader, sizeof(infoHeader), 1, outFile);
     
     //we need to rewrite the image data into the correct stride
-    memset(bmpData, 0, height*stride);
+    bzero(bmpData, height*stride);
     for (y=0; y<height; y++) {
         for (x=0; x<width; x++) {
             bmpData[y][x*3+0] = data[y*width+x].b;
@@ -296,8 +464,8 @@ colour drawMandelbulb(double x, double y) {
     if (v.hit) {
         vec3 normal = mandelbulbEstimateNormal(v.pos);
         
-        vec3 light = {33, -28, -40};
-        ret = phongShade(v.pos, normal, eye, light);
+        //vec3 light = {33, -28, -40};
+        //ret = phongShade(v.pos, normal, eye, light);
         
         /*vec3 lightDir = vecNormalize(vecSub(light, vecSub(v.pos, vecMul(normal, 0.1))));
         raymarchResult v2 = mandelbulbRaymarch(v.pos, lightDir);
@@ -307,7 +475,7 @@ colour drawMandelbulb(double x, double y) {
             ret.b /= 2;
         }*/
         
-        //ret.r = ret.g = ret.b = (normal.x+normal.y+normal.z+3)/6 * 255;
+        ret.r = ret.g = ret.b = (normal.x+normal.y+normal.z+3)/5 * 255;
         
         //ret.r = (normal.y+1)/2 * 255;
         //ret.g = (normal.x+1)/2 * 255;
@@ -356,11 +524,12 @@ double mandelbulbDistanceEstimator(vec3 pos) {
             break;
         }
         
+        dmagnitude = pow(magnitude, power-1) * power * dmagnitude + 1;
+        
+        
         //make z polar so we can exponent easilly
         double theta = acos(z.z / magnitude);
         double phi = atan2(z.y, z.x);
-        
-        dmagnitude = pow(magnitude, power-1) * power * dmagnitude + 1;
         
         //now exponent
         newMagnitude = pow(magnitude, power);
@@ -407,7 +576,7 @@ vec3 mandelbulbEstimateNormal(vec3 pos) {
 raymarchResult mandelbulbRaymarch(vec3 pos, vec3 direction) {
     const int maxSteps = 128;
     const double maxDist = 4;
-    const double minDist = 0.001;
+    const double minDist = 0.0001;
     
     double stepDistance;
         
