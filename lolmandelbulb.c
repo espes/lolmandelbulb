@@ -22,9 +22,7 @@
 #endif
 
 
-#define SIMPLE_SERVER_VERSION 1.0
-#define REQUEST_BUFFER_SIZE 1024
-#define DEFAULT_PORT 7191
+#define DEFAULT_PORT 8080
 
 
 typedef struct _bmpHeader {
@@ -75,10 +73,11 @@ typedef struct _raymarchResult {
     vec3 pos;
 } raymarchResult;
 
+void runFractalServer(int portNumber);
 void writeStringToSocket(int socket, const char* string);
 void writeFileToSocket(int socket, const char* fileName);
 int waitForConnection(int serverSocket);
-int makeServerSocket(int portno);
+int makeServerSocket(int portNumber);
 
 void renderFractal(FILE *outFile,
                    colour (*drawFunction)(double x, double y),
@@ -94,7 +93,10 @@ raymarchResult mandelbulbRaymarch(vec3 pos, vec3 direction);
 double mandelbulbDistanceEstimator(vec3 pos);
 vec3 mandelbulbEstimateNormal(vec3 pos);
 
-colour phongShade(vec3 pos, vec3 normal, vec3 eye, vec3 light);
+int clampRayToSphere(vec3 spherePos, double radius,
+                     vec3 *rayPos, vec3 rayDirection);
+
+vec3 phongShade(vec3 pos, vec3 normal, vec3 eye, vec3 light);
 
 double vecLength(vec3 v);
 void vecNormalizeInplace(vec3 *v);
@@ -105,6 +107,7 @@ vec3 vecAddX(vec3 v, double c);
 vec3 vecAddY(vec3 v, double c);
 vec3 vecAddZ(vec3 v, double c);
 vec3 vecAdd(vec3 a, vec3 b);
+void vecAddInplace(vec3 *a, vec3 b);
 vec3 vecAdd3(vec3 a, vec3 b, vec3 c);
 vec3 vecSub(vec3 a, vec3 b);
 vec3 vecMul(vec3 a, double c);
@@ -122,7 +125,6 @@ int main(int argc, char **argv) {
     int zoom;
     double x, y;
     
-    /*
     if (argc < 5) {
         printf("Usage: %s outfile x y zoom [width] [height]\n", argv[0]);
         return 1;
@@ -145,19 +147,34 @@ int main(int argc, char **argv) {
     renderFractal(outFile, drawMandelbulb, width, height, zoom, x, y);
     
     fclose(outFile);
-    */
-    
-    int serverSocket = makeServerSocket(DEFAULT_PORT);
-    printf("Serving fractals on http://localhost:%d\n", DEFAULT_PORT);
     
     
-    char requestBuffer[REQUEST_BUFFER_SIZE];
-    char requestUrl[REQUEST_BUFFER_SIZE];
+    //runFractalServer(DEFAULT_PORT);
+
+    
+    return 0;
+}
+
+void runFractalServer(int portNumber) {
+    int width = 512;
+    int height = 512;
+    
+    int zoom;
+    double x, y;
+    
+    
+    char requestBuffer[1024];
+    char requestUrl[1024];
+    
+    int serverSocket = makeServerSocket(portNumber);
+    
+    printf("Serving fractals on http://localhost:%d\n", portNumber);
+    
     while (TRUE) {
         int connectionSocket = waitForConnection(serverSocket);
         
         int bytesRead = read(connectionSocket, requestBuffer,
-                         sizeof(requestBuffer)-1);
+                             sizeof(requestBuffer)-1);
         assert(bytesRead >= 0);
         
         printf("http request: %s\n", requestBuffer);
@@ -166,14 +183,15 @@ int main(int argc, char **argv) {
                    requestUrl) == 1) {
             
             //we have a request!
+            
             if (sscanf(requestUrl,
                        "/X-%lf-%lf-%d.bmp", &x, &y, &zoom) == 3) {
                 //we're requested to serve a render!
                 
                 writeStringToSocket(connectionSocket,
-                    "HTTP/1.0 200 Found\r\n"
-                    "Content-Type: image/x-ms-bmp\r\n"
-                    "\r\n");
+                                    "HTTP/1.0 200 Found\r\n"
+                                    "Content-Type: image/x-ms-bmp\r\n"
+                                    "\r\n");
                 
                 
                 //open the socket as a file handle so we can reuse
@@ -190,36 +208,34 @@ int main(int argc, char **argv) {
             } else if (strcmp(requestUrl, "/tile.min.js") == 0) {
                 //send the interface logic javascript
                 writeStringToSocket(connectionSocket,
-                    "HTTP/1.0 200 Found\r\n"
-                    "Content-Type: text/javascript\r\n"
-                    "\r\n");
+                                    "HTTP/1.0 200 Found\r\n"
+                                    "Content-Type: text/javascript\r\n"
+                                    "\r\n");
                 
                 writeFileToSocket(connectionSocket, "tile.min.js");
             } else {
                 //any other request, serve the viewer
                 writeStringToSocket(connectionSocket,
-                    "HTTP/1.0 200 Found\r\n"
-                    "Content-Type: text/html\r\n"
-                    "\r\n"
-                    "<html>"
-                    "<script src=\""
-                    
-//    "https://openlearning.cse.unsw.edu.au/site_media/viewer/tile.min.js"
-                    "/tile.min.js"
-                    
-                    "\"></script></html>");
+                                    "HTTP/1.0 200 Found\r\n"
+                                    "Content-Type: text/html\r\n"
+                                    "\r\n"
+                                    "<html>"
+                                    "<script src=\""
+                                    
+                                    //    "https://openlearning.cse.unsw.edu.au/site_media/viewer/tile.min.js"
+                                    "/tile.min.js"
+                                    
+                                    "\"></script></html>");
             }
         } else {
             //did not recieve a valid HTTP get
             writeStringToSocket(connectionSocket,
-                              "HTTP/1.0 400 Bad Request\r\n");
+                                "HTTP/1.0 400 Bad Request\r\n");
         }
         
         //assert(close(connectionSocket) == 0);
         close(connectionSocket);
     }
-    
-    return 0;
 }
 
 void writeStringToSocket(int socket, const char* string) {
@@ -357,6 +373,7 @@ void renderFractal(FILE *outFile,
 
 }
 
+
 void writeBMP(FILE *outFile, colour* data, int width, int height) {
     bmpHeader header;
     bmpInfoHeader infoHeader;
@@ -415,8 +432,6 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     
     //write the image data
     fwrite(data, 1, height*stride, outFile);
-    
-    fclose(outFile);
 }
 
 colour drawMandelbrot(double x, double y) {
@@ -464,22 +479,28 @@ colour drawMandelbulb(double x, double y) {
     if (v.hit) {
         vec3 normal = mandelbulbEstimateNormal(v.pos);
         
-        //vec3 light = {33, -28, -40};
-        //ret = phongShade(v.pos, normal, eye, light);
+        vec3 light = {33, -28, -40};
+        vec3 shadeRes = phongShade(v.pos, normal, eye, light);
         
-        /*vec3 lightDir = vecNormalize(vecSub(light, vecSub(v.pos, vecMul(normal, 0.1))));
-        raymarchResult v2 = mandelbulbRaymarch(v.pos, lightDir);
-        if (v2.hit) {
+        //ret.r = ret.g = ret.b = (normal.x+normal.y+normal.z+3)/5 * 255;
+        
+        ret.r = ((normal.x+1)/2 * shadeRes.x) * 255;
+        ret.g = ((normal.z+1)/2 * shadeRes.y) * 255;
+        ret.b = ((normal.y+1)/2 * shadeRes.z) * 255;
+        
+        vec3 dirFromLight = vecNormalize(vecSub(v.pos, light));
+        raymarchResult v2 = mandelbulbRaymarch(light, dirFromLight);
+        //printf("%lf %lf %lf\n", dirFromLight.x, dirFromLight.y, dirFromLight.z);
+        //printf("%lf\n", mandelbulbDistanceEstimator(clipped));
+        //printf("%lf\n\n", v2.distance);
+        //assert(v2.hit);
+        if (vecLength(vecSub(v2.pos, v.pos)) > 0.01) {
             ret.r /= 2;
             ret.g /= 2;
             ret.b /= 2;
-        }*/
+        }
         
-        ret.r = ret.g = ret.b = (normal.x+normal.y+normal.z+3)/5 * 255;
-        
-        //ret.r = (normal.y+1)/2 * 255;
-        //ret.g = (normal.x+1)/2 * 255;
-        //ret.b = (normal.z+1)/2 * 255;
+
     } else {
         ret.r = 0;
         ret.g = 0;
@@ -487,6 +508,47 @@ colour drawMandelbulb(double x, double y) {
     }
     
 
+    return ret;
+}
+
+raymarchResult mandelbulbRaymarch(vec3 pos, vec3 direction) {
+    const int maxSteps = 128;
+    const double maxStep = 4;
+    const double minStep = 0.001;
+    
+    double stepDistance;
+        
+    raymarchResult ret;
+    int step;
+    
+    int hitsSphere = clampRayToSphere((vec3){0, 0, 0}, 4,
+                                      &pos, direction);
+    
+    ret.hit = FALSE;
+    ret.distance = 0;
+    if (hitsSphere) {
+        for (step = 0; step < maxSteps; step++) {
+            stepDistance = mandelbulbDistanceEstimator(pos);
+            
+            if (stepDistance < minStep) {
+                ret.hit = TRUE;
+                break;
+            }
+            
+            //we're likely just getting further from the fractal, abort
+            if (stepDistance > maxStep) {
+                break;
+            }
+            
+            ret.distance += stepDistance;
+            
+            pos.x += stepDistance * direction.x;
+            pos.y += stepDistance * direction.y;
+            pos.z += stepDistance * direction.z;
+        }
+    }
+    ret.pos = pos;
+    
     return ret;
 }
 
@@ -560,62 +622,54 @@ vec3 mandelbulbEstimateNormal(vec3 pos) {
     //sampled either side in each axis.
     
     ret.x = mandelbulbDistanceEstimator(vecAddX(pos, epsilon))
-            - mandelbulbDistanceEstimator(vecAddX(pos, -epsilon));
-            
+             - mandelbulbDistanceEstimator(vecAddX(pos, -epsilon));
+    
     ret.y = mandelbulbDistanceEstimator(vecAddY(pos, epsilon))
-            - mandelbulbDistanceEstimator(vecAddY(pos, -epsilon));
+             - mandelbulbDistanceEstimator(vecAddY(pos, -epsilon));
     
     ret.z = mandelbulbDistanceEstimator(vecAddZ(pos, epsilon))
-            - mandelbulbDistanceEstimator(vecAddZ(pos, -epsilon));
+             - mandelbulbDistanceEstimator(vecAddZ(pos, -epsilon));
     
     vecNormalizeInplace(&ret);
     
     return ret;
 }
 
-raymarchResult mandelbulbRaymarch(vec3 pos, vec3 direction) {
-    const int maxSteps = 128;
-    const double maxDist = 4;
-    const double minDist = 0.0001;
+
+//returns false if the ray misses the sphere
+//based on http://wiki.cgsociety.org/index.php/Ray_Sphere_Intersection
+int clampRayToSphere(vec3 spherePos, double radius,
+                     vec3 *rayPos, vec3 rayDirection) {
     
-    double stepDistance;
-        
-    raymarchResult ret;
-    int step;
+    //compute line coefficents from ray
+    vec3 rayToSphere = vecSub(*rayPos, spherePos);
+    double b = vecDot(rayToSphere, rayDirection);
+    double c = vecDot(rayToSphere, rayToSphere) - radius * radius;
     
-    ret.hit = FALSE;
-    ret.distance = 0;
-    for (step = 0; step < maxSteps; step++) {
-        stepDistance = mandelbulbDistanceEstimator(pos);
+    double discriminant = b * b - c;
+    double dist;
+    
+    int ret = TRUE;
+    if (discriminant < 0) {
+        ret = FALSE;
+    } else {
         
-        if (stepDistance < minDist) {
-            ret.hit = TRUE;
-            break;
-        }
-        if (stepDistance > maxDist) {
-            break;
-        }
+        dist = -b - sqrt(discriminant);
         
-        ret.distance += stepDistance;
-        
-        pos.x += stepDistance * direction.x;
-        pos.y += stepDistance * direction.y;
-        pos.z += stepDistance * direction.z;
+        vecAddInplace(rayPos, vecMul(rayDirection, dist));
     }
-    
-    ret.pos = pos;
     
     return ret;
 }
 
 //computes phong shading
 //https://en.wikipedia.org/wiki/Phong_reflection_model
-colour phongShade(vec3 pos, vec3 normal, vec3 eye, vec3 light) {
+vec3 phongShade(vec3 pos, vec3 normal, vec3 eye, vec3 light) {
     
-    const vec3 ambientColour = {0.4, 0.2, 0.2};
-    const vec3 diffuseColour = {1, 0, 0};
+    const vec3 ambientColour = {0.2, 0.2, 0.2};
+    const vec3 diffuseColour = {0, 0.5, 0};
     const vec3 specularColour = {1, 1, 1};
-    const double specularity = 0.7;
+    const double specularity = 2;
     const double shininess = 5;
     
     vec3 lightDirection;
@@ -628,8 +682,6 @@ colour phongShade(vec3 pos, vec3 normal, vec3 eye, vec3 light) {
     vec3 diffuse = {0, 0, 0};
     vec3 specular = {0, 0, 0};
     vec3 resColour;
-    
-    colour ret;
     
     
     lightDirection = vecSub(light, pos);
@@ -657,20 +709,19 @@ colour phongShade(vec3 pos, vec3 normal, vec3 eye, vec3 light) {
         //if the reflection is in the direction of the eye
         if (reflectionDotEye <= 0) {
             reflectionSpecular = specularity * pow(
-                abs(reflectionDotEye), shininess);
+                fabs(reflectionDotEye), shininess);
             specular = vecMul(specularColour, reflectionSpecular);
-        //    specular = specularColour;
         }
     }
     
     resColour = vecAdd3(ambientColour, diffuse, specular);
     
-    //clamp everything down into 0-255
-    ret.r = min(max(resColour.x, 0), 1) * 255;
-    ret.g = min(max(resColour.y, 0), 1) * 255;
-    ret.b = min(max(resColour.z, 0), 1) * 255;
+    //clamp everything down into 0-1
+    resColour.x = min(max(resColour.x, 0), 1);
+    resColour.y = min(max(resColour.y, 0), 1);
+    resColour.z = min(max(resColour.z, 0), 1);
     
-    return ret;
+    return resColour;
 }
 
 
@@ -735,6 +786,12 @@ vec3 vecAdd(vec3 a, vec3 b) {
     ret.y = a.y + b.y;
     ret.z = a.z + b.z;
     return ret;
+}
+
+void vecAddInplace(vec3 *a, vec3 b) {
+    a->x += b.x;
+    a->y += b.y;
+    a->z += b.z;
 }
 
 vec3 vecAdd3(vec3 a, vec3 b, vec3 c) {
