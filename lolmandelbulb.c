@@ -111,6 +111,7 @@ void vecAddInplace(vec3 *a, vec3 b);
 vec3 vecAdd3(vec3 a, vec3 b, vec3 c);
 vec3 vecSub(vec3 a, vec3 b);
 vec3 vecMul(vec3 a, double c);
+void vecMulInplace(vec3 *a, double c);
 double vecDot(vec3 a, vec3 b);
 
 double randf();
@@ -345,7 +346,7 @@ void renderFractal(FILE *outFile,
     for (py=0; py<height; py++) {
         for (px=0; px<width; px++) {
             cx = x + (px - width/2) * pixelSize;
-            cy = y + (py - height/2) * pixelSize;
+            cy = y - (py - height/2) * pixelSize;
             
             initialColour = drawFunction(cx, cy);
             cumr = initialColour.r;
@@ -378,7 +379,7 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     bmpHeader header;
     bmpInfoHeader infoHeader;
     int x, y;
-    int stride = ((width*3 + 3) / 4) * 4;
+    int stride = ((24*width+31)/32)*4;
     
     //yay gcc automagic memory
     uint8_t bmpData[height][stride];
@@ -402,7 +403,8 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     //populate the DIB header
     infoHeader.headerSize = sizeof(bmpInfoHeader);
     infoHeader.width = width;
-    infoHeader.height = height;
+    //we save a negative height so we don't have to invert the data
+    infoHeader.height = -height;
     infoHeader.planes = 1;
     infoHeader.bitsPerPixel = 24;
     
@@ -421,6 +423,8 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     fwrite(&infoHeader, sizeof(infoHeader), 1, outFile);
     
     //we need to rewrite the image data into the correct stride
+    //and format
+    //24-bit is "blue, green and red, 8-bits per each sample"
     bzero(bmpData, height*stride);
     for (y=0; y<height; y++) {
         for (x=0; x<width; x++) {
@@ -431,7 +435,7 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     }
     
     //write the image data
-    fwrite(data, 1, height*stride, outFile);
+    fwrite(bmpData, 1, height*stride, outFile);
 }
 
 colour drawMandelbrot(double x, double y) {
@@ -458,6 +462,8 @@ colour drawMandelbulb(double x, double y) {
     const double fov = M_PI / 2;
     const double zdist = 0.5 / tan(fov / 2);
     
+    const vec3 light = {30, 30, -40};
+    
     
     colour ret;
     
@@ -478,33 +484,32 @@ colour drawMandelbulb(double x, double y) {
     raymarchResult v = mandelbulbRaymarch(eye, direction);
     if (v.hit) {
         vec3 normal = mandelbulbEstimateNormal(v.pos);
+
+        vec3 shading = phongShade(v.pos, normal, eye, light);
         
-        vec3 light = {33, -28, -40};
-        vec3 shadeRes = phongShade(v.pos, normal, eye, light);
-        
-        //ret.r = ret.g = ret.b = (normal.x+normal.y+normal.z+3)/5 * 255;
-        
-        ret.r = ((normal.x+1)/2 * shadeRes.x) * 255;
-        ret.g = ((normal.z+1)/2 * shadeRes.y) * 255;
-        ret.b = ((normal.y+1)/2 * shadeRes.z) * 255;
-        
+        //cast shadow ray
         vec3 dirFromLight = vecNormalize(vecSub(v.pos, light));
         raymarchResult v2 = mandelbulbRaymarch(light, dirFromLight);
-        //printf("%lf %lf %lf\n", dirFromLight.x, dirFromLight.y, dirFromLight.z);
-        //printf("%lf\n", mandelbulbDistanceEstimator(clipped));
-        //printf("%lf\n\n", v2.distance);
-        //assert(v2.hit);
         if (vecLength(vecSub(v2.pos, v.pos)) > 0.01) {
-            ret.r /= 2;
-            ret.g /= 2;
-            ret.b /= 2;
+            vecMulInplace(&shading, 0.5);
         }
         
-
+        
+        vec3 col = vecMul((vec3){1, 1, 1},
+                          (normal.x+normal.y+normal.z+3)/3);
+        
+        col.x *= shading.x;
+        col.y *= shading.y;
+        col.z *= shading.z;
+        
+        ret.r = min(max(col.x, 0.0), 1) * 255;
+        ret.g = min(max(col.y, 0), 1) * 255;
+        ret.b = min(max(col.z, 0), 1) * 255;
+        
     } else {
-        ret.r = 0;
-        ret.g = 0;
-        ret.b = 0;
+        ret.r = 240;
+        ret.g = 240;
+        ret.b = 240;
     }
     
 
@@ -649,28 +654,29 @@ int clampRayToSphere(vec3 spherePos, double radius,
     double discriminant = b * b - c;
     double dist;
     
-    int ret = TRUE;
+    int hit = TRUE;
     if (discriminant < 0) {
-        ret = FALSE;
+        hit = FALSE;
     } else {
         
+        //point of closest intersection
         dist = -b - sqrt(discriminant);
         
         vecAddInplace(rayPos, vecMul(rayDirection, dist));
     }
     
-    return ret;
+    return hit;
 }
 
 //computes phong shading
 //https://en.wikipedia.org/wiki/Phong_reflection_model
 vec3 phongShade(vec3 pos, vec3 normal, vec3 eye, vec3 light) {
     
-    const vec3 ambientColour = {0.2, 0.2, 0.2};
-    const vec3 diffuseColour = {0, 0.5, 0};
+    const vec3 ambientColour = {0.31, 0.19, 0.055};
+    const vec3 diffuseColour = {0.61, 0.48, 0.20};
     const vec3 specularColour = {1, 1, 1};
-    const double specularity = 2;
-    const double shininess = 5;
+    const double specularity = 0.4;
+    const double shininess = 1;
     
     vec3 lightDirection;
     vec3 eyeDirection;
@@ -816,6 +822,12 @@ vec3 vecMul(vec3 a, double c) {
     ret.y = a.y * c;
     ret.z = a.z * c;
     return ret;
+}
+
+void vecMulInplace(vec3 *a, double c) {
+    a->x *= c;
+    a->y *= c;
+    a->z *= c;
 }
 
 double vecDot(vec3 a, vec3 b) {
