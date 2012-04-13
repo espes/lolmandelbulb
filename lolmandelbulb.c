@@ -130,32 +130,30 @@ int main(int argc, char **argv) {
     int zoom;
     double x, y;
     
-    if (argc < 5) {
-        printf("Usage: %s outfile x y zoom [width] [height]\n", argv[0]);
+    if (argc == 1) {
+        runFractalServer(DEFAULT_PORT);
+    } else if (argc < 5) {
+        printf("Usage: %s [outfile x y zoom [width] [height]]\n", argv[0]);
         return 1;
+    } else {
+        //process the arguments
+        FILE *outFile = fopen(argv[1], "wb");
+        x = strtod(argv[2], NULL);
+        y = strtod(argv[3], NULL);
+        zoom = atoi(argv[4]);
+        
+        //optional arguments
+        if (argc >= 6) {
+            width = atoi(argv[5]);
+        }
+        if (argc >= 7) {
+            height = atoi(argv[6]);
+        }
+        
+        renderFractal(outFile, drawMandelbulb, width, height, zoom, x, y);
+        
+        fclose(outFile);
     }
-    
-    //process the arguments
-    FILE *outFile = fopen(argv[1], "wb");
-    x = strtod(argv[2], NULL);
-    y = strtod(argv[3], NULL);
-    zoom = atoi(argv[4]);
-    
-    //optional arguments
-    if (argc >= 6) {
-        width = atoi(argv[5]);
-    }
-    if (argc >= 7) {
-        height = atoi(argv[6]);
-    }
-    
-    renderFractal(outFile, drawMandelbulb, width, height, zoom, x, y);
-    
-    fclose(outFile);
-    
-    
-    //runFractalServer(DEFAULT_PORT);
-
     
     return 0;
 }
@@ -252,6 +250,8 @@ void writeStringToSocket(int socket, const char* string) {
 void writeFileToSocket(int socket, const char* fileName) {
     FILE *file = fopen(fileName, "r");
     uint8_t sendBuffer[1024];
+    
+    assert(file);
     while (!feof(file)) {
         size_t read = fread(sendBuffer, 1, sizeof(sendBuffer), file);
         assert( write(socket, sendBuffer, read) == read );
