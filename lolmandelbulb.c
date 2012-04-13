@@ -32,6 +32,7 @@ typedef struct _bmpHeader {
     uint32_t dataOffset;
 } __attribute__((packed)) bmpHeader;
 
+//see http://msdn.microsoft.com/en-us/library/dd183376(v=vs.85).aspx
 typedef struct _bmpInfoHeader {
     uint32_t headerSize; //40
     
@@ -50,7 +51,7 @@ typedef struct _bmpInfoHeader {
     int32_t yPixelsPerMeter;
     
     //for indexed colours
-    uint32_t userColours;
+    uint32_t usedColours;
     uint32_t importantColours;
 } __attribute__((packed)) bmpInfoHeader;
 
@@ -79,12 +80,14 @@ void writeFileToSocket(int socket, const char* fileName);
 int waitForConnection(int serverSocket);
 int makeServerSocket(int portNumber);
 
+
 void renderFractal(FILE *outFile,
                    colour (*drawFunction)(double x, double y),
                    int width, int height,
                    int zoom, double x, double y);
 
 void writeBMP(FILE *outFile, colour* data, int width, int height);
+
 
 colour drawMandelbrot(double x, double y);
 colour drawMandelbulb(double x, double y);
@@ -93,10 +96,11 @@ raymarchResult mandelbulbRaymarch(vec3 pos, vec3 direction);
 double mandelbulbDistanceEstimator(vec3 pos);
 vec3 mandelbulbEstimateNormal(vec3 pos);
 
-int clampRayToSphere(vec3 spherePos, double radius,
-                     vec3 *rayPos, vec3 rayDirection);
+int clampRayToSphere(vec3 *rayPos, vec3 rayDirection,
+                     vec3 spherePos, double radius);
 
 vec3 phongShade(vec3 pos, vec3 normal, vec3 eye, vec3 light);
+
 
 double vecLength(vec3 v);
 void vecNormalizeInplace(vec3 *v);
@@ -318,7 +322,6 @@ int waitForConnection(int serverSocket) {
     return (connectionSocket);
 }
 
-
 void renderFractal(FILE *outFile,
                    colour (*drawFunction)(double x, double y),
                    int width, int height,
@@ -374,7 +377,6 @@ void renderFractal(FILE *outFile,
 
 }
 
-
 void writeBMP(FILE *outFile, colour* data, int width, int height) {
     bmpHeader header;
     bmpInfoHeader infoHeader;
@@ -403,12 +405,13 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     //populate the DIB header
     infoHeader.headerSize = sizeof(bmpInfoHeader);
     infoHeader.width = width;
-    //we save a negative height so we don't have to invert the data
+    //we save a negative height as normally the data has the be
+    //bottom-to-top.
     infoHeader.height = -height;
     infoHeader.planes = 1;
     infoHeader.bitsPerPixel = 24;
     
-    //bmp compression. don't need to populate imageSize
+    //no compression. don't need to populate imageSize
     infoHeader.compression = 0;
     infoHeader.imageSize = 0;
     
@@ -416,7 +419,7 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     infoHeader.yPixelsPerMeter = 2835;
     
     //only used for indexed colour palettes
-    infoHeader.userColours = 0;
+    infoHeader.usedColours = 0;
     infoHeader.importantColours = 0;
     
     //write the DIB header
@@ -463,11 +466,19 @@ colour drawMandelbulb(double x, double y) {
     const double zdist = 0.5 / tan(fov / 2);
     
     const vec3 light = {30, 30, -40};
-    
-    
-    colour ret;
+    const int drawShadow = TRUE;
     
     vec3 eye, direction;
+    
+    //values used in lighting
+    vec3 normal;
+    vec3 shading;
+    vec3 dirFromLight;
+    vec3 tmpColouring;
+    
+    raymarchResult primaryrayResult, shadowRayResult;
+    
+    colour ret;
     
     //set the eye position. 'down' and 'back' from the fractal
     eye.x = 0;
@@ -481,30 +492,42 @@ colour drawMandelbulb(double x, double y) {
     vecNormalizeInplace(&direction);
     vecRotateXInplace(&direction, M_PI/4);
     
-    raymarchResult v = mandelbulbRaymarch(eye, direction);
-    if (v.hit) {
-        vec3 normal = mandelbulbEstimateNormal(v.pos);
+    primaryrayResult = mandelbulbRaymarch(eye, direction);
+    
+    if (primaryrayResult.hit) {
+        normal = mandelbulbEstimateNormal(primaryrayResult.pos);
 
-        vec3 shading = phongShade(v.pos, normal, eye, light);
+        shading = phongShade(primaryrayResult.pos, normal, eye, light);
         
-        //cast shadow ray
-        vec3 dirFromLight = vecNormalize(vecSub(v.pos, light));
-        raymarchResult v2 = mandelbulbRaymarch(light, dirFromLight);
-        if (vecLength(vecSub(v2.pos, v.pos)) > 0.01) {
-            vecMulInplace(&shading, 0.5);
+        if (drawShadow) {
+            //cast 'shadow ray' from the light to the point.
+            //Opposite to the traditional point-to-light
+            //shadow cast because we can't cast away from the
+            //fractal using the distance estimation method.
+            dirFromLight = vecNormalize(vecSub(primaryrayResult.pos,
+                                            light));
+            shadowRayResult = mandelbulbRaymarch(light, dirFromLight);
+            
+            //if the shadow ray isn't close to the render point,
+            //then it hit something along the way so we're in
+            //shadow.
+            if (vecLength(vecSub(shadowRayResult.pos,
+                                primaryrayResult.pos)) > 0.01) {
+                vecMulInplace(&shading, 0.5);
+            }
         }
         
-        
-        vec3 col = vecMul((vec3){1, 1, 1},
+        //use the normal for some interesting surface detail
+        tmpColouring = vecMul((vec3){1, 1, 1},
                           (normal.x+normal.y+normal.z+3)/3);
         
-        col.x *= shading.x;
-        col.y *= shading.y;
-        col.z *= shading.z;
+        tmpColouring.x *= shading.x;
+        tmpColouring.y *= shading.y;
+        tmpColouring.z *= shading.z;
         
-        ret.r = min(max(col.x, 0.0), 1) * 255;
-        ret.g = min(max(col.y, 0), 1) * 255;
-        ret.b = min(max(col.z, 0), 1) * 255;
+        ret.r = min(max(tmpColouring.x, 0), 1) * 255;
+        ret.g = min(max(tmpColouring.y, 0), 1) * 255;
+        ret.b = min(max(tmpColouring.z, 0), 1) * 255;
         
     } else {
         ret.r = 240;
@@ -517,17 +540,21 @@ colour drawMandelbulb(double x, double y) {
 }
 
 raymarchResult mandelbulbRaymarch(vec3 pos, vec3 direction) {
-    const int maxSteps = 128;
+    const int maxSteps = 512;
     const double maxStep = 4;
-    const double minStep = 0.001;
+    const double minStep = 0.00001;
     
     double stepDistance;
         
     raymarchResult ret;
     int step;
     
-    int hitsSphere = clampRayToSphere((vec3){0, 0, 0}, 4,
-                                      &pos, direction);
+    //the mandelbulb is inside a radius ~1.5 sphere
+    //distance estimation breaks down if we're too far away
+    //so start the ray at the intersection point with the
+    //sphere
+    int hitsSphere = clampRayToSphere(&pos, direction,
+                                      (vec3){0, 0, 0}, 1.5);
     
     ret.hit = FALSE;
     ret.distance = 0;
@@ -574,7 +601,7 @@ double mandelbulbDistanceEstimator(vec3 pos) {
     //http://blog.hvidtfeldts.net
     
     
-    const int iterations = 13;
+    const int iterations = 30;
     const int power = 8;
     const int bailout = 4;
     
@@ -624,7 +651,7 @@ vec3 mandelbulbEstimateNormal(vec3 pos) {
     
     //So the normal is akin to the derivative of the surface of the
     //fractal. Estimate it by taking the difference of 'distances'
-    //sampled either side in each axis.
+    //sampled either side of the point in each axis.
     
     ret.x = mandelbulbDistanceEstimator(vecAddX(pos, epsilon))
              - mandelbulbDistanceEstimator(vecAddX(pos, -epsilon));
@@ -643,8 +670,8 @@ vec3 mandelbulbEstimateNormal(vec3 pos) {
 
 //returns false if the ray misses the sphere
 //based on http://wiki.cgsociety.org/index.php/Ray_Sphere_Intersection
-int clampRayToSphere(vec3 spherePos, double radius,
-                     vec3 *rayPos, vec3 rayDirection) {
+int clampRayToSphere(vec3 *rayPos, vec3 rayDirection,
+                     vec3 spherePos, double radius) {
     
     //compute line coefficents from ray
     vec3 rayToSphere = vecSub(*rayPos, spherePos);
@@ -659,9 +686,10 @@ int clampRayToSphere(vec3 spherePos, double radius,
         hit = FALSE;
     } else {
         
-        //point of closest intersection
+        //distance to point of closest intersection
         dist = -b - sqrt(discriminant);
         
+        //advance the ray to it
         vecAddInplace(rayPos, vecMul(rayDirection, dist));
     }
     
@@ -704,7 +732,7 @@ vec3 phongShade(vec3 pos, vec3 normal, vec3 eye, vec3 light) {
         diffuse.y = diffuseColour.y * normalDotLight;
         diffuse.z = diffuseColour.z * normalDotLight;
         
-        //phong highlight
+        //specular highlight
         //find the reflected vector
         reflected.x = lightDirection.x - 2 * normalDotLight * normal.x;
         reflected.z = lightDirection.y - 2 * normalDotLight * normal.y;
@@ -714,6 +742,7 @@ vec3 phongShade(vec3 pos, vec3 normal, vec3 eye, vec3 light) {
         
         //if the reflection is in the direction of the eye
         if (reflectionDotEye <= 0) {
+            //calculate some specular
             reflectionSpecular = specularity * pow(
                 fabs(reflectionDotEye), shininess);
             specular = vecMul(specularColour, reflectionSpecular);
