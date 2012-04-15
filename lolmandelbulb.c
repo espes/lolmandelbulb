@@ -9,6 +9,7 @@
 #include <math.h>
 #include <assert.h>
 
+#include <signal.h>
 #include <netinet/in.h>
 #include <unistd.h>
 
@@ -34,7 +35,7 @@ typedef struct _bmpHeader {
 
 //see http://msdn.microsoft.com/en-us/library/dd183376(v=vs.85).aspx
 typedef struct _bmpInfoHeader {
-    uint32_t headerSize; //40
+    uint32_t infoHeaderSize; //40
     
     int32_t width;
     int32_t height;
@@ -74,7 +75,8 @@ typedef struct _raymarchResult {
     vec3 pos;
 } raymarchResult;
 
-void runFractalServer(int portNumber);
+void runFractalServer(int portNumber,
+                      colour (*drawFunction)(double x, double y));
 void writeStringToSocket(int socket, const char* string);
 void writeFileToSocket(int socket, const char* fileName);
 int waitForConnection(int serverSocket);
@@ -87,6 +89,8 @@ void renderFractal(FILE *outFile,
                    int zoom, double x, double y);
 
 void writeBMP(FILE *outFile, colour* data, int width, int height);
+
+void printProgressBar(int width, double progress);
 
 
 colour drawMandelbrot(double x, double y);
@@ -131,9 +135,10 @@ int main(int argc, char **argv) {
     double x, y;
     
     if (argc == 1) {
-        runFractalServer(DEFAULT_PORT);
+        runFractalServer(DEFAULT_PORT, drawMandelbulb);
     } else if (argc < 5) {
-        printf("Usage: %s [outfile x y zoom [width] [height]]\n", argv[0]);
+        printf("Usage: %s [outfile x y zoom [width] [height]]\n",
+               argv[0]);
         return 1;
     } else {
         //process the arguments
@@ -150,7 +155,8 @@ int main(int argc, char **argv) {
             height = atoi(argv[6]);
         }
         
-        renderFractal(outFile, drawMandelbulb, width, height, zoom, x, y);
+        renderFractal(outFile, drawMandelbulb,
+                      width, height, zoom, x, y);
         
         fclose(outFile);
     }
@@ -158,13 +164,16 @@ int main(int argc, char **argv) {
     return 0;
 }
 
-void runFractalServer(int portNumber) {
+void runFractalServer(int portNumber,
+                      colour (*drawFunction)(double x, double y)) {
     int width = 512;
     int height = 512;
     
     int zoom;
     double x, y;
     
+    int connectionSocket;
+    int bytesRead;
     
     char requestBuffer[1024];
     char requestUrl[1024];
@@ -174,9 +183,9 @@ void runFractalServer(int portNumber) {
     printf("Serving fractals on http://localhost:%d\n", portNumber);
     
     while (TRUE) {
-        int connectionSocket = waitForConnection(serverSocket);
+        connectionSocket = waitForConnection(serverSocket);
         
-        int bytesRead = read(connectionSocket, requestBuffer,
+        bytesRead = read(connectionSocket, requestBuffer,
                              sizeof(requestBuffer)-1);
         assert(bytesRead >= 0);
         
@@ -225,7 +234,7 @@ void runFractalServer(int portNumber) {
                                     "<html>"
                                     "<script src=\""
                                     
-                                    //    "https://openlearning.cse.unsw.edu.au/site_media/viewer/tile.min.js"
+//"https://openlearning.cse.unsw.edu.au/site_media/viewer/tile.min.js"
                                     "/tile.min.js"
                                     
                                     "\"></script></html>");
@@ -263,6 +272,10 @@ void writeFileToSocket(int socket, const char* fileName) {
 //stolen from comp1917 "simpleServer.c"
 int makeServerSocket(int portNumber) { 
     
+    //don't crash on SIGPIPE
+    //if the socket breaks we don't /really/ care
+    signal(SIGPIPE, SIG_IGN);
+    
     // create socket
     int serverSocket = socket (AF_INET, SOCK_STREAM, 0);
     assert (serverSocket >= 0);   
@@ -286,7 +299,7 @@ int makeServerSocket(int portNumber) {
         sizeof(int)
     );
     
-    int bindSuccess = bind (
+    int bindSuccess = bind(
         serverSocket, 
         (struct sockaddr *) &serverAddress,
           sizeof (serverAddress)
@@ -327,7 +340,7 @@ void renderFractal(FILE *outFile,
                    int width, int height,
                    int zoom, double x, double y) {
 
-    const int supersamplingSamples = 1;
+    const int supersamplingSamples = 32;
     
     int px, py; //pixel location
     double cx, cy; //pixel location on the draw plane
@@ -339,13 +352,15 @@ void renderFractal(FILE *outFile,
     colour initialColour, sampleColour;
     int cumr, cumg, cumb; //cumulative sum oversample colours
     
+    int completedRows = 0; //for progress bar
     
     
-#pragma omp parallel for shared(data) private(px, py, cx, cy, \
-                                              i, dx, dy, \
-                                              initialColour, \
-                                              sampleColour, \
-                                              cumr, cumg, cumb)
+#pragma omp parallel for shared(data, completedRows) \
+                         private(px, py, cx, cy, \
+                                 i, dx, dy, \
+                                 initialColour, \
+                                 sampleColour, \
+                                 cumr, cumg, cumb)
     for (py=0; py<height; py++) {
         for (px=0; px<width; px++) {
             cx = x + (px - width/2) * pixelSize;
@@ -371,6 +386,10 @@ void renderFractal(FILE *outFile,
             data[py][px].g = cumg / supersamplingSamples;
             data[py][px].b = cumb / supersamplingSamples;
         }
+
+        #pragma omp critical
+        completedRows++;
+        printProgressBar(80, (double)completedRows/height);
     }
     
     writeBMP(outFile, (colour*)data, width, height);
@@ -403,7 +422,7 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     fwrite(&header, sizeof(header), 1, outFile);
     
     //populate the DIB header
-    infoHeader.headerSize = sizeof(bmpInfoHeader);
+    infoHeader.infoHeaderSize = sizeof(bmpInfoHeader);
     infoHeader.width = width;
     //we save a negative height as normally the data has the be
     //bottom-to-top.
@@ -439,6 +458,24 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     
     //write the image data
     fwrite(bmpData, 1, height*stride, outFile);
+}
+
+void printProgressBar(int width, double progress) {
+    int endPos = width-5;
+    int x;
+    
+    //position cursor to column 0
+    printf("\x1b[1G");
+    printf("[");
+    for (x=1; x<endPos*progress; x++) {
+        printf("=");
+    }
+    for (; x<endPos; x++) {
+        printf(" ");
+    }
+    printf("]");
+    printf(" %02d%%", min((int)(progress*100), 99));
+    fflush(stdout);
 }
 
 colour drawMandelbrot(double x, double y) {
@@ -764,7 +801,6 @@ double vecLength(vec3 v) {
     return sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
 }
 
-
 void vecNormalizeInplace(vec3 *v) {
     double mag = vecLength(*v);
     v->x /= mag;
@@ -776,7 +812,6 @@ vec3 vecNormalize(vec3 v) {
     vecNormalizeInplace(&v);
     return v;
 }
-
 
 void vecRotateXInplace(vec3 *v, double theta) {
     vec3 ret;
