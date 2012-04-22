@@ -1,5 +1,5 @@
 // lolmandelbulb.c
-// comp1917 task2
+// comp1917 task2 made awesome
 // Created by Niel van der Westhuizen, 09/04/2012
 
 #include <stdio.h>
@@ -13,6 +13,8 @@
 #include <netinet/in.h>
 #include <unistd.h>
 
+#include "pixelColor.h"
+
 #define TRUE 1
 #define FALSE 0
 
@@ -23,7 +25,7 @@
 #endif
 
 
-#define DEFAULT_PORT 8080
+#define SERVER_PORT 8080
 
 
 typedef struct _bmpHeader {
@@ -59,10 +61,6 @@ typedef struct _bmpInfoHeader {
 typedef struct _colour {
     uint8_t b, g, r;
 } colour;
-
-typedef struct _vec2 {
-    double x, y;
-} vec2;
 
 typedef struct _vec3 {
     double x, y, z;
@@ -126,7 +124,6 @@ double randf();
 
 
 
-
 int main(int argc, char **argv) {
     int width = 512;
     int height = 512;
@@ -135,7 +132,7 @@ int main(int argc, char **argv) {
     double x, y;
     
     if (argc == 1) {
-        runFractalServer(DEFAULT_PORT, drawMandelbulb);
+        runFractalServer(SERVER_PORT, drawMandelbrot);
     } else if (argc < 5) {
         printf("Usage: %s [outfile x y zoom [width] [height]]\n",
                argv[0]);
@@ -147,7 +144,7 @@ int main(int argc, char **argv) {
         y = strtod(argv[3], NULL);
         zoom = atoi(argv[4]);
         
-        //optional arguments
+        //optional width and height
         if (argc >= 6) {
             width = atoi(argv[5]);
         }
@@ -155,7 +152,7 @@ int main(int argc, char **argv) {
             height = atoi(argv[6]);
         }
         
-        renderFractal(outFile, drawMandelbulb,
+        renderFractal(outFile, drawMandelbrot,
                       width, height, zoom, x, y);
         
         fclose(outFile);
@@ -166,8 +163,8 @@ int main(int argc, char **argv) {
 
 void runFractalServer(int portNumber,
                       colour (*drawFunction)(double x, double y)) {
-    int width = 512;
-    int height = 512;
+    int width = 128;
+    int height = 128;
     
     int zoom;
     double x, y;
@@ -187,21 +184,21 @@ void runFractalServer(int portNumber,
         
         bytesRead = read(connectionSocket, requestBuffer,
                              sizeof(requestBuffer)-1);
-        assert(bytesRead >= 0);
         
-        printf("http request: %s\n", requestBuffer);
+        //printf("http request: %s\n", requestBuffer);
         
         if (sscanf(requestBuffer, "GET %s HTTP/%*d.%*d\r\n",
                    requestUrl) == 1) {
             
             //we have a request!
+            printf("GET %s\n", requestUrl);
             
             if (sscanf(requestUrl,
                        "/X-%lf-%lf-%d.bmp", &x, &y, &zoom) == 3) {
                 //we're requested to serve a render!
                 
                 writeStringToSocket(connectionSocket,
-                                    "HTTP/1.0 200 Found\r\n"
+                                    "HTTP/1.0 200 OK\r\n"
                                     "Content-Type: image/x-ms-bmp\r\n"
                                     "\r\n");
                 
@@ -209,13 +206,14 @@ void runFractalServer(int portNumber,
                 //open the socket as a file handle so we can reuse
                 //renderFractal code for files :D
                 FILE *responseHandle = fdopen(connectionSocket, "w+");
-                assert(responseHandle);
                 
-                renderFractal(responseHandle, drawMandelbulb,
-                              width, height, zoom, x, y);
-                
-                fflush(responseHandle);
-                //assert(fclose(responseHandle) == 0);
+                if (responseHandle) {
+                    renderFractal(responseHandle, drawFunction,
+                                  width, height, zoom, x, y);
+
+                    fflush(responseHandle);
+                    //assert(fclose(responseHandle) == 0);
+                }
                 
             } else if (strcmp(requestUrl, "/tile.min.js") == 0) {
                 //send the interface logic javascript
@@ -226,7 +224,7 @@ void runFractalServer(int portNumber,
                 
                 writeFileToSocket(connectionSocket, "tile.min.js");
             } else {
-                //any other request, serve the viewer
+                //any other request, serve the viewer html
                 writeStringToSocket(connectionSocket,
                                     "HTTP/1.0 200 Found\r\n"
                                     "Content-Type: text/html\r\n"
@@ -259,10 +257,11 @@ void writeStringToSocket(int socket, const char* string) {
 void writeFileToSocket(int socket, const char* fileName) {
     FILE *file = fopen(fileName, "r");
     uint8_t sendBuffer[1024];
+    size_t read;
     
     assert(file);
     while (!feof(file)) {
-        size_t read = fread(sendBuffer, 1, sizeof(sendBuffer), file);
+        read = fread(sendBuffer, 1, sizeof(sendBuffer), file);
         assert( write(socket, sendBuffer, read) == read );
     }
     fclose(file);
@@ -271,18 +270,22 @@ void writeFileToSocket(int socket, const char* fileName) {
 //start the server listening on the specified port number
 //stolen from comp1917 "simpleServer.c"
 int makeServerSocket(int portNumber) { 
+    int serverSocket;
+    struct sockaddr_in serverAddress;
+    int reuseAddressValue = 1;
+    int bindSuccess;
     
     //don't crash on SIGPIPE
     //if the socket breaks we don't /really/ care
     signal(SIGPIPE, SIG_IGN);
     
-    // create socket
-    int serverSocket = socket (AF_INET, SOCK_STREAM, 0);
+    //create socket
+    serverSocket = socket (AF_INET, SOCK_STREAM, 0);
+    
+    //ensure no error opening socket
     assert (serverSocket >= 0);   
-    // error opening socket
     
     // bind socket to listening port
-    struct sockaddr_in serverAddress;
     bzero ((char *) &serverAddress, sizeof (serverAddress));
     
     serverAddress.sin_family      = AF_INET;
@@ -290,24 +293,19 @@ int makeServerSocket(int portNumber) {
     serverAddress.sin_port        = htons (portNumber);
     
     // let the server start immediately after a previous shutdown
-    int optionValue = 1;
-    setsockopt (
-        serverSocket,
-        SOL_SOCKET,
-        SO_REUSEADDR,
-        &optionValue, 
-        sizeof(int)
-    );
+    setsockopt(serverSocket,
+              SOL_SOCKET,
+              SO_REUSEADDR,
+              &reuseAddressValue, 
+              sizeof(int));
     
-    int bindSuccess = bind(
-        serverSocket, 
-        (struct sockaddr *) &serverAddress,
-          sizeof (serverAddress)
-    );
+    bindSuccess = bind(serverSocket, 
+                       (struct sockaddr *)&serverAddress,
+                       sizeof (serverAddress));
     
-    assert (bindSuccess >= 0);
     // if this assert fails wait a short while to let the operating 
     // system clear the port before trying again
+    assert (bindSuccess >= 0);
     
     return serverSocket;
 }
@@ -318,21 +316,24 @@ int makeServerSocket(int portNumber) {
 int waitForConnection(int serverSocket) {
     // listen for a connection
     const int serverMaxBacklog = 10;
+    
+    int connectionSocket;
+    struct sockaddr_in clientAddress;
+    socklen_t clientLen;
+    
     listen (serverSocket, serverMaxBacklog);
     
     // accept the connection
-    struct sockaddr_in clientAddress;
-    socklen_t clientLen = sizeof (clientAddress);
-    int connectionSocket = accept (
+    clientLen = sizeof(clientAddress);
+    connectionSocket = accept(
         serverSocket, 
-        (struct sockaddr *) &clientAddress, 
-            &clientLen
-    );
+        (struct sockaddr *)&clientAddress, 
+        &clientLen);
     
+    // ensure no error on accept
     assert (connectionSocket >= 0);
-    // error on accept
     
-    return (connectionSocket);
+    return connectionSocket;
 }
 
 void renderFractal(FILE *outFile,
@@ -340,17 +341,17 @@ void renderFractal(FILE *outFile,
                    int width, int height,
                    int zoom, double x, double y) {
 
-    const int supersamplingSamples = 32;
+    const int supersamplingSamples = 4;
     
     int px, py; //pixel location
     double cx, cy; //pixel location on the draw plane
-    double pixelSize = 1. / (1 << zoom); //pixel size on the draw plane
+    double pixelSize = 1.0 / (1 << zoom); //pixel size on the draw plane
     colour data[height][width];
     
     int i;
     double dx, dy; //supersample offsets
     colour initialColour, sampleColour;
-    int cumr, cumg, cumb; //cumulative sum oversample colours
+    int cumr, cumg, cumb; //cumulative sum colours for supersampling
     
     int completedRows = 0; //for progress bar
     
@@ -363,9 +364,12 @@ void renderFractal(FILE *outFile,
                                  cumr, cumg, cumb)
     for (py=0; py<height; py++) {
         for (px=0; px<width; px++) {
+            //map the pixel onto the complex plane
             cx = x + (px - width/2) * pixelSize;
             cy = y - (py - height/2) * pixelSize;
             
+            //sample the colour the first time seperately
+            //for handling no supersampling
             initialColour = drawFunction(cx, cy);
             cumr = initialColour.r;
             cumg = initialColour.g;
@@ -376,7 +380,9 @@ void renderFractal(FILE *outFile,
             for (i=1; i<supersamplingSamples; i++) {
                 dx = (randf() - 0.5) * pixelSize;
                 dy = (randf() - 0.5) * pixelSize;
+                
                 sampleColour = drawFunction(cx+dx, cy+dy);
+                
                 cumr += sampleColour.r;
                 cumg += sampleColour.g;
                 cumb += sampleColour.b;
@@ -388,9 +394,12 @@ void renderFractal(FILE *outFile,
         }
 
         #pragma omp critical
-        completedRows++;
-        printProgressBar(80, (double)completedRows/height);
+        {
+            completedRows++;
+            printProgressBar(80, (double)completedRows/height);
+        }
     }
+    printf("\n");
     
     writeBMP(outFile, (colour*)data, width, height);
 
@@ -400,6 +409,7 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     bmpHeader header;
     bmpInfoHeader infoHeader;
     int x, y;
+    //24-bits per pixel, rounded up to 32-bit (4-byte) boundary
     int stride = ((24*width+31)/32)*4;
     
     //yay gcc automagic memory
@@ -409,11 +419,8 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     fwrite("BM", 1, 2, outFile);
     
     //populate the header
-    
-    //3 bytes per pixel, but row aligned to 4 bytes
     header.fileSize = 2 + sizeof(bmpHeader) + sizeof(bmpInfoHeader)
                         + stride*height;
-    
     header.creator1 = 0;
     header.creator2 = 0;
     header.dataOffset = 2 + sizeof(bmpHeader) + sizeof(bmpInfoHeader);
@@ -424,7 +431,7 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     //populate the DIB header
     infoHeader.infoHeaderSize = sizeof(bmpInfoHeader);
     infoHeader.width = width;
-    //we save a negative height as normally the data has the be
+    //we set a negative height as normally the data has the be
     //bottom-to-top.
     infoHeader.height = -height;
     infoHeader.planes = 1;
@@ -446,7 +453,7 @@ void writeBMP(FILE *outFile, colour* data, int width, int height) {
     
     //we need to rewrite the image data into the correct stride
     //and format
-    //24-bit is "blue, green and red, 8-bits per each sample"
+    //24-bit bmp is "blue, green and red, 8-bits per each sample"
     bzero(bmpData, height*stride);
     for (y=0; y<height; y++) {
         for (x=0; x<width; x++) {
@@ -464,8 +471,9 @@ void printProgressBar(int width, double progress) {
     int endPos = width-5;
     int x;
     
-    //position cursor to column 0
+    //ansi control code to position cursor to column 0
     printf("\x1b[1G");
+    
     printf("[");
     for (x=1; x<endPos*progress; x++) {
         printf("=");
@@ -474,26 +482,71 @@ void printProgressBar(int width, double progress) {
         printf(" ");
     }
     printf("]");
+    //print the percentage
     printf(" %02d%%", min((int)(progress*100), 99));
     fflush(stdout);
 }
 
 colour drawMandelbrot(double x, double y) {
-    const int iterations = 256;
+    const int iterations = 1024;
+    const int bailout = 16;
+    const int smoothColouring = TRUE;
+
+    //make points in the set black;
+    const colour setColour = {0, 0, 0};
     
     double zreal = 0, zimag = 0;
     double tmp;
+
+    //for smooth colouring
+    double zMagnitude;
+    double iReal;
+    double fraction;
+    int sample;
+
     
     colour ret;
     
     int i;
-    for (i=0; i<iterations && zreal*zreal+zimag*zimag < 2*2; i++) {
+    for (i=0; i<iterations
+          && zreal*zreal+zimag*zimag < bailout*bailout; i++) {
+        //z = z^2 + (x + yi)
+        
         tmp = zreal*zreal - zimag*zimag + x;
         zimag = 2 * zreal * zimag + y;
         zreal = tmp;
     }
+
+    //colour the pixel!
+    if (i >= iterations) {
+        //point is in the set (so should be black)
+        ret = setColour;
+    } else if (smoothColouring) {
+        zMagnitude = hypot(zreal, zimag);
+
+        //See Wikipedia:Mandelbrot_set#Continuous_.28smooth.29_coloring
+        iReal = i-log2(log(zMagnitude));
+        if (iReal < 0) {
+            iReal = 0;
+        }
+
+        //Since pixelColor only takes integers, take the colour either
+        //side and interpolate them
+        sample = floor(iReal)-1;
+        fraction = 1-fmod(iReal, 1);
+
+        ret.r = min(max(stepsToRed(sample)*fraction
+                 + stepsToRed(sample+1)*(1-fraction), 0), 255);
+        ret.g = min(max(stepsToGreen(sample)*fraction
+                 + stepsToGreen(sample+1)*(1-fraction), 0), 255);
+        ret.b = min(max(stepsToBlue(sample)*fraction
+                 + stepsToBlue(sample+1)*(1-fraction), 0), 255);
+    } else {
+        ret.r = stepsToRed(i);
+        ret.g = stepsToGreen(i);
+        ret.b = stepsToBlue(i);
+    }
     
-    ret.r = ret.g = ret.b = i;
     
     return ret;
 }
@@ -505,9 +558,7 @@ colour drawMandelbulb(double x, double y) {
     const vec3 light = {30, 30, -40};
     const int drawShadow = TRUE;
     
-    vec3 eye, direction;
-    
-    //values used in lighting
+    //values used for lighting
     vec3 normal;
     vec3 shading;
     vec3 dirFromLight;
@@ -518,14 +569,10 @@ colour drawMandelbulb(double x, double y) {
     colour ret;
     
     //set the eye position. 'down' and 'back' from the fractal
-    eye.x = 0;
-    eye.y = 3;
-    eye.z = -3;
+    vec3 eye = {0, 3, -3};
     
-    //set the view direction. looking up at the fractal
-    direction.x = x;
-    direction.y = y;
-    direction.z = zdist;
+    //set the view direction - looking up at the fractal
+    vec3 direction = {x, y, zdist};
     vecNormalizeInplace(&direction);
     vecRotateXInplace(&direction, M_PI/4);
     
@@ -538,8 +585,8 @@ colour drawMandelbulb(double x, double y) {
         
         if (drawShadow) {
             //cast 'shadow ray' from the light to the point.
-            //Opposite to the traditional point-to-light
-            //shadow cast because we can't cast away from the
+            //Opposite to the traditional point-to-light shadow
+            //cast because we can't cast reliably away from the
             //fractal using the distance estimation method.
             dirFromLight = vecNormalize(vecSub(primaryrayResult.pos,
                                             light));
@@ -567,11 +614,12 @@ colour drawMandelbulb(double x, double y) {
         ret.b = min(max(tmpColouring.z, 0), 1) * 255;
         
     } else {
+        //missed the fractal, set the background colour to
+        //slightly off-white
         ret.r = 240;
         ret.g = 240;
         ret.b = 240;
     }
-    
 
     return ret;
 }
@@ -579,7 +627,7 @@ colour drawMandelbulb(double x, double y) {
 raymarchResult mandelbulbRaymarch(vec3 pos, vec3 direction) {
     const int maxSteps = 512;
     const double maxStep = 4;
-    const double minStep = 0.00001;
+    const double minStep = 0.0001;
     
     double stepDistance;
         
@@ -689,7 +737,6 @@ vec3 mandelbulbEstimateNormal(vec3 pos) {
     //So the normal is akin to the derivative of the surface of the
     //fractal. Estimate it by taking the difference of 'distances'
     //sampled either side of the point in each axis.
-    
     ret.x = mandelbulbDistanceEstimator(vecAddX(pos, epsilon))
              - mandelbulbDistanceEstimator(vecAddX(pos, -epsilon));
     
@@ -734,6 +781,7 @@ int clampRayToSphere(vec3 *rayPos, vec3 rayDirection,
 }
 
 //computes phong shading
+//returns a colour in the form form of a vec3 for easier mixing
 //https://en.wikipedia.org/wiki/Phong_reflection_model
 vec3 phongShade(vec3 pos, vec3 normal, vec3 eye, vec3 light) {
     
