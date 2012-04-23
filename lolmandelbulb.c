@@ -152,6 +152,8 @@ int main(int argc, char **argv) {
                   "Valid fractals are 'mandelbrot' and 'madelbulb'\n");
                 return 1;
             }
+        } else if (optionCharacter == 'p') {
+            port = atoi(optarg);
         } else if (optionCharacter == 'o') {
             outFile = fopen(optarg, "wb");
             assert(outFile);
