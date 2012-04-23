@@ -1,13 +1,13 @@
 // pixelColor.c
-// comp1917 task2
+// comp1917 task2 made awesome
 // Created by Niel van der Westhuizen 20/04/2012
 
 #include <math.h>
 #include "pixelColor.h"
 
 //So we colour the mandelbrot with colour maps
-//based on gradients which we sepcify with some splines
-//for easy tweeking :D
+//based on gradients which we specify with some splines
+//for easy tweaking :D
 
 const double gradientScale = 0.056;
 const double gradientOffset = 0;

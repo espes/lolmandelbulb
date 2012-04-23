@@ -8,10 +8,10 @@
 #include <string.h>
 #include <math.h>
 #include <assert.h>
+#include <unistd.h>
 
 #include <signal.h>
 #include <netinet/in.h>
-#include <unistd.h>
 
 #include "pixelColor.h"
 
@@ -26,8 +26,6 @@
 
 
 #define SERVER_PORT 8080
-
-//#define USE_LOCAL_TILEJS
 
 
 typedef struct _bmpHeader {
@@ -122,46 +120,77 @@ vec3 vecMul(vec3 a, double c);
 void vecMulInplace(vec3 *a, double c);
 double vecDot(vec3 a, vec3 b);
 
-double randf();
-
-
+double randd();
 
 int main(int argc, char **argv) {
-    int width = 512;
-    int height = 512;
-    
-    int zoom;
-    double x, y;
-    
-    if (argc == 1) {
-        runFractalServer(SERVER_PORT, drawMandelbrot);
-    } else if (argc < 5) {
-        printf("Usage: %s [outfile x y zoom [width] [height]]\n",
-               argv[0]);
-        return 1;
-    } else {
-        //process the arguments
-        FILE *outFile = fopen(argv[1], "wb");
-        x = strtod(argv[2], NULL);
-        y = strtod(argv[3], NULL);
-        zoom = atoi(argv[4]);
-        
-        //optional width and height
-        if (argc >= 6) {
-            width = atoi(argv[5]);
+    FILE *outFile;
+    int zoom = 7;
+    double x = 0, y = 0;
+    int width = 512, height = 512;
+
+    int port = SERVER_PORT;
+
+    colour (*drawFunction)(double x, double y) = drawMandelbulb;
+
+    int successfulArguments = TRUE;
+
+    int optionCharacter;
+    while (TRUE) {
+        optionCharacter = getopt(argc, argv, "f:p:o:x:y:z:w:h:");
+        if (optionCharacter == -1) {
+            break;
         }
-        if (argc >= 7) {
-            height = atoi(argv[6]);
+
+        //not allowed to use switch...
+        if (optionCharacter == 'f') {
+            if (strcmp(optarg, "mandelbrot") == 0) {
+                drawFunction = drawMandelbrot;
+            } else if (strcmp(optarg, "mandelbulb") == 0) {
+                drawFunction = drawMandelbulb;
+            } else {
+                fprintf(stderr,
+                  "Valid fractals are 'mandelbrot' and 'madelbulb'\n");
+                return 1;
+            }
+        } else if (optionCharacter == 'o') {
+            outFile = fopen(optarg, "wb");
+            assert(outFile);
+        } else if (optionCharacter == 'x') {
+            x = strtod(optarg, NULL);
+        } else if (optionCharacter == 'y') {
+            y = strtod(optarg, NULL);
+        } else if (optionCharacter == 'z') {
+            zoom = atoi(optarg);
+        } else if (optionCharacter == 'w') {
+            width = atoi(optarg);
+        } else if (optionCharacter == 'h') {
+            height = atoi(optarg);
+        } else {
+            successfulArguments = FALSE;
         }
-        
-        renderFractal(outFile, drawMandelbrot,
-                      width, height, zoom, x, y);
-        
+    }
+
+    if (optind < argc) {
+        successfulArguments = FALSE;
+    }
+
+    if (!successfulArguments) {
+        fprintf(stderr, "Usage: %s [-f fractal] [-p serverport] "
+                    "[-o outfile [-x x] [-y y] "
+                      "[-z zoom] [-w width] [-h height]]\n",
+                    argv[0]);
+    } else if (outFile) { //asked to render to a file
+        renderFractal(outFile, drawFunction,
+              width, height, zoom, x, y);
+
         fclose(outFile);
+    } else {
+        runFractalServer(port, drawFunction);
     }
     
     return 0;
 }
+
 
 void runFractalServer(int portNumber,
                       colour (*drawFunction)(double x, double y)) {
@@ -216,7 +245,6 @@ void runFractalServer(int portNumber,
                     fflush(responseHandle);
                     //assert(fclose(responseHandle) == 0);
                 }
-#ifdef USE_LOCAL_TILEJS
             } else if (strcmp(requestUrl, "/tile.min.js") == 0) {
                 //send the interface logic javascript
                 writeStringToSocket(connectionSocket,
@@ -225,7 +253,6 @@ void runFractalServer(int portNumber,
                                     "\r\n");
                 
                 writeFileToSocket(connectionSocket, "tile.min.js");
-#endif
             } else {
                 //any other request, serve the viewer html
                 writeStringToSocket(connectionSocket,
@@ -234,11 +261,8 @@ void runFractalServer(int portNumber,
                                     "\r\n"
                                     "<html>"
                                     "<script src=\""
-#ifdef USE_LOCAL_TILEJS
                                     "/tile.min.js"
-#else
-    "https://openlearning.cse.unsw.edu.au/site_media/viewer/tile.min.js"
-#endif
+//"https://openlearning.cse.unsw.edu.au/site_media/viewer/tile.min.js"
                                     
                                     "\"></script></html>");
             }
@@ -383,8 +407,8 @@ void renderFractal(FILE *outFile,
             //supersampling!
             //sample the rest with random diviations from the centre.
             for (i=1; i<supersamplingSamples; i++) {
-                dx = (randf() - 0.5) * pixelSize;
-                dy = (randf() - 0.5) * pixelSize;
+                dx = (randd() - 0.5) * pixelSize;
+                dy = (randd() - 0.5) * pixelSize;
                 
                 sampleColour = drawFunction(cx+dx, cy+dy);
                 
@@ -953,6 +977,6 @@ double vecDot(vec3 a, vec3 b) {
 }
 
 //returns a random double between 0.0 and 1.0
-double randf() {
+double randd() {
     return (double)rand() / RAND_MAX;
 }
