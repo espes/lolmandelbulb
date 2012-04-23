@@ -1,6 +1,7 @@
 // lolmandelbulb.c
 // comp1917 task2 made awesome
 // Created by Niel van der Westhuizen, 09/04/2012
+// GPLv2
 
 #include <stdio.h>
 #include <stdlib.h>
