@@ -27,6 +27,8 @@
 
 #define SERVER_PORT 8080
 
+//#define USE_LOCAL_TILEJS
+
 
 typedef struct _bmpHeader {
     uint32_t fileSize;
@@ -163,8 +165,8 @@ int main(int argc, char **argv) {
 
 void runFractalServer(int portNumber,
                       colour (*drawFunction)(double x, double y)) {
-    int width = 128;
-    int height = 128;
+    const int width = 512;
+    const int height = 512;
     
     int zoom;
     double x, y;
@@ -214,7 +216,7 @@ void runFractalServer(int portNumber,
                     fflush(responseHandle);
                     //assert(fclose(responseHandle) == 0);
                 }
-                
+#ifdef USE_LOCAL_TILEJS
             } else if (strcmp(requestUrl, "/tile.min.js") == 0) {
                 //send the interface logic javascript
                 writeStringToSocket(connectionSocket,
@@ -223,6 +225,7 @@ void runFractalServer(int portNumber,
                                     "\r\n");
                 
                 writeFileToSocket(connectionSocket, "tile.min.js");
+#endif
             } else {
                 //any other request, serve the viewer html
                 writeStringToSocket(connectionSocket,
@@ -231,9 +234,11 @@ void runFractalServer(int portNumber,
                                     "\r\n"
                                     "<html>"
                                     "<script src=\""
-                                    
-//"https://openlearning.cse.unsw.edu.au/site_media/viewer/tile.min.js"
+#ifdef USE_LOCAL_TILEJS
                                     "/tile.min.js"
+#else
+    "https://openlearning.cse.unsw.edu.au/site_media/viewer/tile.min.js"
+#endif
                                     
                                     "\"></script></html>");
             }
@@ -345,7 +350,7 @@ void renderFractal(FILE *outFile,
     
     int px, py; //pixel location
     double cx, cy; //pixel location on the draw plane
-    double pixelSize = 1.0 / (1 << zoom); //pixel size on the draw plane
+    double pixelSize = pow(2, -zoom); //pixel size on the draw plane
     colour data[height][width];
     
     int i;
@@ -488,7 +493,7 @@ void printProgressBar(int width, double progress) {
 }
 
 colour drawMandelbrot(double x, double y) {
-    const int iterations = 1024;
+    const int iterations = 4096;
     const int bailout = 16;
     const int smoothColouring = TRUE;
 
@@ -530,7 +535,8 @@ colour drawMandelbrot(double x, double y) {
             iReal = 0;
         }
 
-        //Since pixelColor only takes integers, take the colour either
+        //Since the pixelColor.h header is retarded and
+        //only takes integers, take the colour either
         //side and interpolate them
         sample = floor(iReal)-1;
         fraction = 1-fmod(iReal, 1);

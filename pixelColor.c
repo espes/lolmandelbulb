@@ -7,7 +7,7 @@
 
 //So we colour the mandelbrot with colour maps
 //based on gradients which we sepcify with some splines
-// :D
+//for easy tweeking :D
 
 const double gradientScale = 0.056;
 const double gradientOffset = 0;
@@ -36,7 +36,8 @@ double blueGradientPoints[][2] = {
     {1.0,  0.0}
 };
 
-
+//put the steps into the range of the gradient based on
+//the gradient scale and offset
 double normaliseSteps(int steps) {
     return fmod(gradientScale * steps + 2 * gradientOffset, 1);
 }
